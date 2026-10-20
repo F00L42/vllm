@@ -17,7 +17,8 @@ uv run --no-project --python .venv/Scripts/python.exe python tools/decisions/ver
 
 已有 `.venv` 时跳过创建。Linux 的解释器路径改为 `.venv/bin/python`。
 `verify_upstream.py` 需要完整 Git 仓库及 `v0.30.0`、`v0.32.0` 两个 tag；
-发布源码压缩包内没有 Git 对象时，可运行离线合同测试，但不能运行源码比对。
+缺少 tag 时，在仓库中执行 `git fetch https://github.com/vllm-project/vllm.git tag v0.30.0 tag v0.32.0`。
+容器内拉取定制分支和安装均在 `/vllm-workspace/vllm` 下进行，命令见部署手册。
 
 本地离线结果：**62 项通过**。其中 18 项来自官方 `v0.32.0`
 `test_question_types.py`，44 项覆盖 Qwen 策略和 0.30 服务接入：

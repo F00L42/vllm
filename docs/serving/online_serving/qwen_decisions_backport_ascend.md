@@ -11,6 +11,7 @@ vLLM Python 包，保留镜像提供的 vllm-ascend、torch、torch-npu、Triton
 
 | 项目 | 固定基线 |
 | --- | --- |
+| 代码仓库 | [F00L42/vllm](https://github.com/F00L42/vllm) |
 | 分支 | `codex/v0.30.0-qwen-decisions` |
 | vLLM 底座 | `v0.30.0`，`ced6857afa0ea7b2e3f0846a62e1394e90f15607` |
 | Decisions 来源 | `v0.32.0`，`5df63a7203cdb9328d824a27b682e77c7b9928be` |
@@ -113,17 +114,21 @@ PY
 
 ## 只安装定制 vLLM
 
-把交付的源码压缩包解到 `/workspace/vllm-qwen-decisions`，或把本分支完整 clone 到这个目录。
-该路径应直接包含 `pyproject.toml`、`setup.py` 和 `vllm/`。
-
-使用交付源码包时，先在容器内解压：
+在容器已有的 `/vllm-workspace/vllm` 仓库里拉取定制分支，然后使用原解释器重新安装。
+先确认 `git status --short` 没有待保留的本地修改；下面的切换和拉取不会强制覆盖本地代码。
 
 ```bash
-tar -xzf /workspace/vllm-qwen-decisions-030.tar.gz -C /workspace
-```
+set -e
+cd /vllm-workspace/vllm
+git status --short
+git fetch https://github.com/F00L42/vllm.git codex/v0.30.0-qwen-decisions
+if git show-ref --verify --quiet refs/heads/codex/v0.30.0-qwen-decisions; then
+  git switch codex/v0.30.0-qwen-decisions
+else
+  git switch -c codex/v0.30.0-qwen-decisions FETCH_HEAD
+fi
+git pull --ff-only https://github.com/F00L42/vllm.git codex/v0.30.0-qwen-decisions
 
-```bash
-cd /workspace/vllm-qwen-decisions
 VLLM_TARGET_DEVICE=empty \
 VLLM_VERSION_OVERRIDE=0.30.0+qwen.decisions.032 \
 python -m pip install --no-deps --no-build-isolation -e .
@@ -159,7 +164,8 @@ vLLM 安装方式；`VLLM_VERSION_OVERRIDE` 固定 0.30 包版本，避免分支
 服务错误文本和日志逐字一致。
 
 必须在同一个解释器里安装和启动；安装后完整重启 API server 和所有 workers。
-`vllm.__file__` 应指向新源码目录。此回移不需要安装旧版 Ascend 自定义代码，也不需要
+`vllm.__file__` 应指向 `/vllm-workspace/vllm/vllm/`。后续更新也在此目录执行上述拉取和安装步骤，
+拉取使用显式 fork 地址，保留已有 `origin` 设置。此回移不需要安装旧版 Ascend 自定义代码，也不需要
 `--additional-config '{"systemone_config":...}'`。
 
 ## 启动服务
@@ -237,7 +243,7 @@ prompt 和标签已改为官方版本，同一权重也不保证与旧补丁返�
 运行真实服务检查并保存原始响应，失败时仍会写出诊断文件：
 
 ```bash
-cd /workspace/vllm-qwen-decisions
+cd /vllm-workspace/vllm
 python tools/decisions/smoke_qwen.py \
   --base-url http://127.0.0.1:8010 --model qwen-decisions \
   --output /workspace/decisions-evidence/smoke.json
