@@ -21,6 +21,10 @@ For events, please visit [vllm.ai/events](https://vllm.ai/events) to join us.
 
 ## About
 
+This branch backports the official v0.32.0 Qwen Decisions API onto v0.30.0.
+See the [Ascend container deployment guide](docs/serving/online_serving/qwen_decisions_backport_ascend.md)
+for scope, installation and validation. NPU acceptance is pending.
+
 vLLM is a fast and easy-to-use library for LLM inference and serving.
 
 Originally developed in the [Sky Computing Lab](https://sky.cs.berkeley.edu) at UC Berkeley, vLLM has grown into one of the most active open-source AI projects built and maintained by a diverse community of many dozens of academic institutions and companies from over 2000 contributors.
