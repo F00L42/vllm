@@ -41,18 +41,40 @@ tag 混为同一个仓库的版本。
 此路径只读文本，Qwen3.5 的 Decisions 请求也不接受 image、audio、video。
 其他官方策略及模型不在本次回移范围。
 
-完整保留官方的 prompt、真实回复起点的单 token 校验、每题一次
+保留官方26项以内的 prompt、真实回复起点的单 token 校验、每题一次
 `generate(max_tokens=1, temperature=0, logprob_token_ids=...)`、并发聚合、
 `choice/noul/score`、`label_mass`、`argmax_is_label`、LoRA/priority/cache_salt
 传递和 usage 计数。
 
 兼容改动只有：将 chat-utils 导入改回 0.30 路径；在本服务类中补入官方的 trace-header
 方法；在 0.30 的 app-state 和 router 初始化处接入服务。未回移 0.32 的模型、引擎、
-调度器、采样器、依赖升级或非 Qwen 策略。
+调度器、采样器、依赖升级或非 Qwen 策略。后续新增的预热与128项扩展见下一节。
 
 旧分支 `codex/systemone-token-readout` 的 `ascend_systemone` endpoint、自定义 prompt、
 温度配置、共享前缀预填屏障和 APC 实验补丁不属于本次基线。官方方式依赖原生 APC 和调度器；
 完整提交 prompt 不代表每题一定重算，也不保证冷缓存时公共 state 只算一次。
+
+## 本次补迁：预热与128项扩展
+
+预热来自原始 v0.32.0 tag 之后的官方 PR #61192，固定提交
+`ee22f682ab0d2139ae69e3cdbb762a565a166813`，不是原032发布包已有的功能。
+服务级开关 `VLLM_DECISIONS_WARM_SHARED_PREFIX` 默认 `0`，用于 A/B 和回滚。
+
+启用时设置 `export VLLM_DECISIONS_WARM_SHARED_PREFIX=1` 并完整重启服务。
+多题、hybrid、APC开启且完整渲染prompt的公共前缀至少128tokens时，先完成一个
+`-prefix` 内部请求，再并发提交各题原始完整prompt。额外生成的token丢弃，外部usage仅统计各题。
+当前先支持DP=1、无外部KVconnector的缓存域；多DP、外部connector和媒体输入跳过预热。
+空流、error/abort或未完成producer会明确失败，不继续分支，也不吞错重试。
+
+预热长度不是实际命中长度。030的Qwen GDN没有声明任意内部prefill checkpoint导出，
+实际复用仍取决于已有最终状态、块对齐、状态恢复与淘汰。没有NPU命中与数值结果前，
+不保证长state一定只计算一次。详细核查和实验步骤见
+[迁移与验收记录](../../design/decisions_030_extensions.md)。
+
+128项是本地扩展：固定使用A–Z和102个已验证的大写双字母。≤26项的prompt逐字保持原样，
+>26项才改为要求精确标签；noul/score和概率、confidence契约保持不变。
+启动时验证完整码表，不兼容的tokenizer/template以ERROR日志说明并禁用该endpoint，不隐式截断。
+官方Qwen3.6-27B固定revision已本地复验；其他模型和部署自定义模板需要单独复验。
 
 ## 创建容器
 
@@ -147,7 +169,8 @@ for name, version in before.items():
         except metadata.PackageNotFoundError:
             installed = None
         assert installed == version, (name, version, installed)
-assert metadata.version('vllm').startswith('0.30.0+qwen.decisions.032')
+from packaging.version import Version
+assert Version(metadata.version('vllm')) == Version('0.30.0+qwen.decisions.032')
 print(vllm.__version__, vllm.__file__)
 print(sorted(READ_STRATEGIES))
 PY
@@ -171,18 +194,18 @@ vLLM 安装方式；`VLLM_VERSION_OVERRIDE` 固定 0.30 包版本，避免分支
 ## 启动服务
 
 先用镜像已支持的 checkpoint 做验收。以下为单卡起始配置，容量和 TP 数按实际模型调整。
-`--enforce-eager --no-async-scheduling` 用于首次验收时减少执行路径变量，之后可单独验证
-图执行和异步调度。比较性能时，双方必须使用相同执行参数。
+图执行和异步调度使用框架原生选择；仅在排障时临时添加
+`--enforce-eager --no-async-scheduling`。新功能不强制这些参数，比较性能时双方保持相同执行配置。
 
 ```bash
 unset VLLM_PLUGINS
 export VLLM_USE_V2_MODEL_RUNNER=0
+export VLLM_DECISIONS_WARM_SHARED_PREFIX=0
 export ASCEND_RT_VISIBLE_DEVICES=0
 
 vllm serve /models/qwen-checkpoint \
   --served-model-name qwen-decisions \
   --runner generate --dtype bfloat16 --tensor-parallel-size 1 \
-  --enforce-eager --no-async-scheduling \
   --max-model-len 8192 --max-num-batched-tokens 2048 --max-num-seqs 8 \
   --enable-prefix-caching --enable-chunked-prefill \
   --logprobs-mode raw_logprobs \
@@ -196,7 +219,7 @@ vllm serve /models/qwen-checkpoint \
 **固定 V1 runner 是必要条件。** rc2 的 V1 `AscendSampler` 继承上游候选 token
 logprobs 路径；V2 的 `compute_topk_logprobs` 明确未支持自定义 `logprob_token_ids`。
 使用 `raw_logprobs` 保持 `label_mass` 的全词表概率含义；不使用 logits 模式。
-26 个 choice 标签不要求把 `--max-logprobs` 提到 26，0.30 对指定 token IDs 使用单独校验。
+128 个 choice 标签不要求把 `--max-logprobs` 提到 128，0.30 对指定 token IDs 使用单独校验。
 
 对于 Qwen3.5/GDN 混合模型，先核对 checkpoint 架构和镜像支持，再按其混合缓存要求增加
 `--mamba-cache-mode align`；不要把普通 Qwen3 的缓存验收直接视为 GDN 状态复用证据。
@@ -228,7 +251,7 @@ curl http://127.0.0.1:8010/v1/systemone \
 | 官方语义 | 本分支行为 |
 | --- | --- |
 | 每次最多问题数 | 64 |
-| choice | 字典 criteria，1–26 项，标签 `A…Z` |
+| choice | 字典 criteria，1–128 项；前26个标签仍为 `A…Z` |
 | noul | `yes/no` 标签；`noul` 是 yes 的候选归一化概率 |
 | score | criteria 为有序列表，2–10 级；score 为从 0 开始的期望等级 |
 | probabilities | 仅在候选标签内归一化 |
@@ -249,7 +272,7 @@ python tools/decisions/smoke_qwen.py \
   --output /workspace/decisions-evidence/smoke.json
 ```
 
-检查包含三种题型、26 项 choice、10 级 score、单选项 confidence、输入校验、thinking/媒体拒绝，以及并发 Decision
+检查包含三种题型、26/128 项 choice、129 项拒绝、10 级 score、单选项 confidence、输入校验、thinking/媒体拒绝，以及并发 Decision
 和 Chat Generation。通过只证明这些请求的服务行为，不证明质量、压力容量或性能。
 
 若另有原版 vLLM `v0.32.0` 服务，加载完全相同的权重、tokenizer、chat template、dtype

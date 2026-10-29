@@ -18,10 +18,11 @@ uv run --no-project --python .venv/Scripts/python.exe python tools/decisions/ver
 已有 `.venv` 时跳过创建。Linux 的解释器路径改为 `.venv/bin/python`。
 `verify_upstream.py` 需要完整 Git 仓库及 `v0.30.0`、`v0.32.0` 两个 tag；
 缺少 tag 时，在仓库中执行 `git fetch https://github.com/vllm-project/vllm.git tag v0.30.0 tag v0.32.0`。
+PERF_SOURCE另需 `git fetch https://github.com/vllm-project/vllm.git ee22f682ab0d2139ae69e3cdbb762a565a166813`。
 容器内拉取定制分支和安装均在 `/vllm-workspace/vllm` 下进行，命令见部署手册。
 
-本地离线结果：**62 项通过**。其中 18 项来自官方 `v0.32.0`
-`test_question_types.py`，44 项覆盖 Qwen 策略和 0.30 服务接入：
+本次离线结果：**153 项通过**；原始 `ea2e357` 不可变快照的62项亦重新通过。
+覆盖原题型、Qwen策略、0.30服务接入及新增预热和128项合同：
 
 - `choice/noul/score` 的概率、`label_mass`、confidence、score legend 和 usage。
 - 单选项的 confidence、全词表 argmax 不在候选内、标签 token 校验。
@@ -62,7 +63,7 @@ python -m pytest -q \
 
 ## 真实模型端到端测试
 
-`test_structured_decisions_e2e.py` 原样保留自官方 `v0.32.0`，会自行启动
+`test_structured_decisions_e2e.py` 基于官方 `v0.32.0`，仅将选项边界扩展到128/129并增加输入长度预算，会自行启动
 `Qwen/Qwen3-0.6B` 服务并加载权重，需要完整测试依赖、模型文件和可用设备。
 Ascend 环境需保持部署手册要求的 V1 runner：
 
@@ -93,3 +94,26 @@ python tools/decisions/smoke_qwen.py \
 客户端保存原始响应和检查结果。通过只证明所覆盖请求的服务行为与合成输入对比，
 不能替代业务数据回放或性能基准。上述完整运行时、真实 tokenizer、模型 E2E 和远端
 数值/性能验证在本次 Windows 交付中均为 `pending_remote`。
+
+## 预热、128项及真实CPU gather
+
+源码合同的原始语义、PERF_SOURCE及有意扩展分别核验；不能通过删除整个策略检查放宽合同。
+完整本地证据、缓存能力审计及三组远端实验见
+[迁移与验收记录](../../docs/design/decisions_030_extensions.md)。
+
+在已有Transformers、tokenizers与Jinja2的环境，只加载tokenizer复验：
+
+```bash
+python tools/decisions/verify_qwen36_choice128.py \
+  --tokenizer /models/Qwen3.6-27B \
+  --output /workspace/decisions-evidence/tokenizer-128.json
+python tools/decisions/probe_sampler_cpu.py \
+  --output /workspace/decisions-evidence/sampler-cpu.json
+```
+
+CPU probe需要有torch的解释器，或传入现有CPU包目录`--torch-site-packages`。
+其结果只覆盖原030 gather数学、异长候选、padding和索引重排，不证明NPU buffer/runner。
+真实服务实验使用`benchmark_qwen.py`的warm/gather/business三种模式，详见上述记录。
+
+本机应用程序控制阻止旧venv的Python launcher；实际离线和分词检查使用已获准的
+uv基础解释器加载该venv依赖，没有改变系统控制策略。此环境问题不代表目标容器行为。
