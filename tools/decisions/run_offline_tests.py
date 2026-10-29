@@ -57,7 +57,12 @@ def definitions(name: str, path: str, names: set[str], **scope: Any):
     """Execute original selected definitions, with explicit import boundaries."""
     result = module(name, **scope)
     tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
-    selected = [n for n in tree.body if getattr(n, "name", None) in names]
+    selected = [
+        n
+        for n in tree.body
+        if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and n.name in names
+    ]
     assert {n.name for n in selected} == names
     future = ast.ImportFrom(
         module="__future__", names=[ast.alias(name="annotations")], level=0
@@ -81,13 +86,14 @@ def bootstrap():
     from pydantic_core import core_schema
     from starlette.background import BackgroundTask, BackgroundTasks
 
-    logger = logging.getLogger("decisions.offline")
+    logger: Any = logging.getLogger("decisions.offline")
     logger.warning_once = logger.warning
     logger.debug_once = logger.debug
     module("vllm.logger", init_logger=lambda _: logger)
     envs = module(
         "vllm.envs",
         VLLM_MAX_N_SEQUENCES=16384,
+        VLLM_DECISIONS_WARM_SHARED_PREFIX=False,
         VLLM_ALLOW_RUNTIME_LORA_UPDATING=False,
         VLLM_SKIP_MODEL_NAME_VALIDATION=False,
     )
@@ -218,7 +224,9 @@ def bootstrap():
         (ROOT / "vllm/renderers/online_renderer.py").read_text(encoding="utf-8")
     )
     renderer = next(
-        n for n in tree.body if getattr(n, "name", None) == "OnlineRenderer"
+        n
+        for n in tree.body
+        if isinstance(n, ast.ClassDef) and n.name == "OnlineRenderer"
     )
     renderer.body = [
         n for n in renderer.body if getattr(n, "name", None) == "preprocess_chat"

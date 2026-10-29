@@ -8,7 +8,10 @@ No model weights or accelerator are needed for these tokenizer checks.
 
 import pytest
 
-from vllm.entrypoints.generate.structured_decisions.question_types import LABELS
+from vllm.entrypoints.generate.structured_decisions.question_types import (
+    CHOICE_LABELS_128,
+    LABELS,
+)
 from vllm.entrypoints.generate.structured_decisions.strategies import reply_label_ids
 
 
@@ -36,3 +39,18 @@ def test_labels_start_the_reply(qwen):
     assert len(set(ids)) == 12
     with pytest.raises(ValueError, match="not one distinct token"):
         reply_label_ids(tokenizer, tokenizer.encode("team:"))
+
+
+def test_extended_choice_codebook_starts_the_real_reply(qwen):
+    tokenizer, prompt_ids = qwen
+    tail, ids = reply_label_ids(tokenizer, prompt_ids, CHOICE_LABELS_128)
+    assert len(ids) == len(set(ids)) == 128
+    assert not set(ids) & set(tokenizer.all_special_ids)
+    assert not set(ids) & set(tokenizer.get_added_vocab().values())
+    assert [tokenizer.decode([token]) for token in ids] == list(CHOICE_LABELS_128)
+    text = tokenizer.decode(tail)
+    for label, token in zip(CHOICE_LABELS_128, ids):
+        assert tokenizer.encode(text + label, add_special_tokens=False) == [
+            *tail,
+            token,
+        ]

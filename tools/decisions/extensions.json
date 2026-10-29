@@ -1,0 +1,78 @@
+{
+  "source": "5df63a7203cdb9328d824a27b682e77c7b9928be",
+  "backport_source": "ea2e3575d07bf49fdefa1e74ceb349896ff74f8d",
+  "perf_source": "ee22f682ab0d2139ae69e3cdbb762a565a166813",
+  "symbols": {
+    "vllm/entrypoints/generate/structured_decisions/question_types.py": {
+      "CHOICE_LABELS_128": {
+        "ast_sha256": "26e0caa70f244bbd12e6efc1b7917d1ec00d9fc32e7222d16820f792ab63ce9c",
+        "reason": "Fixed pool from supplied verified tokenizer report; first26 retained."
+      },
+      "ChoiceQuestion.label_set": {
+        "ast_sha256": "e3901666265901bcada69f1dc25ffdee6c9dede8873b577983c755887aee111c",
+        "reason": "Choice-only128 capacity."
+      },
+      "ChoiceQuestion.prompt": {
+        "ast_sha256": "0f96fa31dd77bc9e5918dc952dc26cf20f5934b0495d66c4373f496fb8769640",
+        "reason": "Pure >26 exact-label instruction; <=26 prompt remains original."
+      }
+    },
+    "vllm/entrypoints/generate/structured_decisions/api_router.py": {
+      "init_structured_decisions_state": {
+        "ast_sha256": "7d2037f559bcebf1c99dce26cdb1e5e788cdf4cb6a904123e706ed0eedd3ba5a",
+        "reason": "Visible initialization failure with model/tokenizer/templateidentity; unsupportedmodels still debug."
+      }
+    },
+    "vllm/entrypoints/generate/label_reads.py": {
+      "next_token_label_reads": {
+        "ast_sha256": "bf57e60a3e097f1e333d7c4fb941f89956709150017396d9f805136b28ebe0ea",
+        "reason": "RejectNaN/+inf/all-inf in requested candidates before response; keepfinite/-inf semantics."
+      }
+    },
+    "vllm/entrypoints/generate/structured_decisions/strategies.py": {
+      "MIN_WARM_PREFIX_TOKENS": {
+        "ast_sha256": "ae7be37502f0642d545e2fc0f6d3634e5d8df8abea2b95f5d23620675280ede9",
+        "reason": "ExactPERF_SOURCE threshold128."
+      },
+      "common_prefix_len": {
+        "ast_sha256": "1c4f5a83cef9170ab74ec547e6dccb88aed08ab13590d10942c1231a7e711485",
+        "reason": "ExactPERF_SOURCE algorithm plus emptyinput->0."
+      },
+      "reply_label_ids": {
+        "ast_sha256": "9e698229203e7fb2d53ba57b33811e58fed135bd51259f2f94c9b9519c202b63",
+        "reason": "Strictone-token uniqueness,special/added/range validation."
+      },
+      "type_label_ids": {
+        "ast_sha256": "3b58eecdb7163108e755a9ceede56a52eee8bfd875cc30a0e3ace54930e0413f",
+        "reason": "Complete140-label startup map with cross-typeIDalias rejection."
+      },
+      "NextTokenStrategy.__init__": {
+        "ast_sha256": "ed03505cf4fe275b1f8c4707a1c02fc5c5b4c988b8f91fdf3269ce5a0d8f0125",
+        "reason": "Passactualmodelvocabsize tovalidation."
+      },
+      "NextTokenStrategy.limits": {
+        "ast_sha256": "ed922cdf6ec89009e84937fdc314fb20609753d5e8e4f4dcc88eca713c49eb47",
+        "reason": "Choice128; still64questions,score/noultype caps."
+      },
+      "NextTokenStrategy._warm_shared_prefix": {
+        "ast_sha256": "5f1a844146d81afd23ce28b3902821273890c371d62f7bd2246505e2b573bf7a",
+        "reason": "PERF_SOURCE producer with opt-in,gates,cache-domain guards,terminalvalidation/aclose andDEBUGmetrics."
+      },
+      "NextTokenStrategy.read": {
+        "ast_sha256": "3abc434d8dbd7cd7654cba422bc59ac82357744755a249a59d6dc7651bc6b751",
+        "reason": "PERF_SOURCE producerbarrier beforeoriginalbranches; retainmedia rejection/skip andoriginalusage;boundedDEBUGcachemetrics."
+      },
+      "logger": {
+        "ast_sha256": "639da0af9ce95c9d3f9151e54cacef71e6e3b2e09a28146b78c1ae0c9a01dccc",
+        "reason": "BoundedDEBUGobservability using standard vLLM logger."
+      }
+    }
+  },
+  "imports": {
+    "vllm/entrypoints/generate/structured_decisions/question_types.py": "0a3cf9d3cade0b07967daa71a178882ce1f5dec21edc6410550e93dab5315531",
+    "vllm/entrypoints/generate/structured_decisions/api_router.py": "0dcaa035a709434de632001ce5876845daa254f8675a8c3c3311c97f7d3fbf58",
+    "vllm/entrypoints/generate/label_reads.py": "aa5b8c5e047396e8b37553e09d501735cd0a5a78768c327e4515322118115728",
+    "vllm/entrypoints/generate/structured_decisions/strategies.py": "c65524db712e9ebb496437797ec39837cf1fa955682f5d36360c5bca212aca4c",
+    "vllm/entrypoints/generate/structured_decisions/protocol.py": "7f2fe3bf68ad39ffc62f8425a39c7fef983fc1d170529cb072f36be3a1e7a022"
+  }
+}

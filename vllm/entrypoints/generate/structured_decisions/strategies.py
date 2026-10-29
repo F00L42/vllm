@@ -7,7 +7,9 @@ Only models in READ_STRATEGIES are currently supported.
 
 import asyncio
 import json
+import logging
 import math
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -21,7 +23,8 @@ from vllm.config import ModelConfig
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import ChatTemplateContentFormatOption
 from vllm.entrypoints.generate.label_reads import next_token_label_reads
-from vllm.inputs import EngineInput
+from vllm.inputs import EngineInput, tokens_input
+from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.multimodal.media import (
     MEDIA_CONNECTOR_REGISTRY,
@@ -35,12 +38,28 @@ from vllm.tokenizers import TokenizerLike
 
 from .protocol import ReadPromptRequest
 from .question_types import (
+    CHOICE_LABELS_128,
     LABELS,
     QUESTION_TYPES,
     Question,
     StructuredDecisionError,
     label_softmax,
 )
+
+logger = init_logger(__name__)
+# Fewer shared tokens are not worth an extra round trip before the reads.
+MIN_WARM_PREFIX_TOKENS = 128
+
+
+def common_prefix_len(prompts: Sequence[Sequence[int]]) -> int:
+    """The number of leading token ids that every prompt starts with."""
+    if not prompts:
+        return 0
+    shortest = min(prompts, key=len)
+    for i, token_id in enumerate(shortest):
+        if any(p[i] != token_id for p in prompts):
+            return i
+    return len(shortest)
 
 
 @dataclass
@@ -130,6 +149,8 @@ def reply_label_ids(
     tokenizer: TokenizerLike,
     prompt_ids: Sequence[int],
     labels: Sequence[str] = LABELS,
+    *,
+    vocab_size: int | None = None,
 ) -> tuple[list[int], list[int]]:
     """The prompt's ids after its last added token, and the token each of
     ``labels`` adds after them as the first token of the reply. Raises
@@ -137,26 +158,51 @@ def reply_label_ids(
     tail = prompt_tail(tokenizer, prompt_ids)
     text = tokenizer.decode(tail)
     ids: list[int] = []
+    forbidden = set(tokenizer.all_special_ids) | set(
+        tokenizer.get_added_vocab().values()
+    )
+    upper_bound = len(tokenizer)
+    if vocab_size is not None:
+        upper_bound = min(upper_bound, vocab_size)
     for label in labels:
         extended = tokenizer.encode(text + label, add_special_tokens=False)
-        if extended[:-1] != tail or extended[-1] in ids:
+        if len(extended) != len(tail) + 1 or extended[:-1] != tail:
             raise ValueError(
                 f"label {label!r} is not one distinct token after this model's "
                 "chat prompt"
             )
-        ids.append(extended[-1])
+        token_id = extended[-1]
+        if token_id in ids or token_id in forbidden or not 0 <= token_id < upper_bound:
+            raise ValueError(
+                f"label {label!r} has duplicate, special, added or out-of-range "
+                f"token ID {token_id} for this model's chat prompt"
+            )
+        ids.append(token_id)
     return tail, ids
 
 
 def type_label_ids(
-    tokenizer: TokenizerLike, prompt_ids: Sequence[int]
+    tokenizer: TokenizerLike,
+    prompt_ids: Sequence[int],
+    *,
+    vocab_size: int | None = None,
 ) -> dict[str, int]:
     """The reply's first token for each label of every registered question
     type. Raises ValueError as reply_label_ids does."""
     label_ids: dict[str, int] = {}
     for qtype in QUESTION_TYPES.values():
-        _, ids = reply_label_ids(tokenizer, prompt_ids, qtype.label_set)
-        label_ids.update(zip(qtype.label_set, ids))
+        _, ids = reply_label_ids(
+            tokenizer, prompt_ids, qtype.label_set, vocab_size=vocab_size
+        )
+        for label, token_id in zip(qtype.label_set, ids):
+            if any(
+                old_label != label and old_id == token_id
+                for old_label, old_id in label_ids.items()
+            ):
+                raise ValueError(
+                    f"label {label!r} shares token ID {token_id} with another label"
+                )
+            label_ids[label] = token_id
     return label_ids
 
 
@@ -185,7 +231,11 @@ class NextTokenStrategy(ReadStrategy):
         # is the same for every question.
         prompt = self._generation_prompt()
         self.tail = prompt_tail(self._tokenizer(), prompt)
-        self.label_ids = type_label_ids(self._tokenizer(), prompt)
+        self.label_ids = type_label_ids(
+            self._tokenizer(),
+            prompt,
+            vocab_size=context.engine_client.model_config.get_vocab_size(),
+        )
 
     def _tokenizer(self) -> TokenizerLike:
         return self.context.online_renderer.renderer.get_tokenizer()
@@ -243,7 +293,7 @@ class NextTokenStrategy(ReadStrategy):
         return [{"type": "image_pil", "image_pil": image} for image in images]
 
     def limits(self) -> DecisionLimits:
-        return DecisionLimits(max_questions=64, max_options=len(LABELS))
+        return DecisionLimits(max_questions=64, max_options=len(CHOICE_LABELS_128))
 
     def _read_request(
         self, chat_template_kwargs: dict[str, Any] | None, cache_salt: str | None = None
@@ -275,6 +325,89 @@ class NextTokenStrategy(ReadStrategy):
         ).token_ids
         return engine_input, list(prompt_ids or [])
 
+    async def _warm_shared_prefix(
+        self,
+        prompts: Sequence[Sequence[int]],
+        request_id: str,
+        *,
+        lora_request: LoRARequest | None,
+        priority: int,
+        cache_salt: str | None,
+        trace_headers: Mapping[str, str] | None,
+    ) -> None:
+        """Complete a shared-prefix producer before submitting hybrid reads."""
+        engine_client = self.context.engine_client
+        reason = None
+        if not envs.VLLM_DECISIONS_WARM_SHARED_PREFIX:
+            reason = "disabled"
+        elif len(prompts) < 2:
+            reason = "single_question"
+        elif not engine_client.model_config.is_hybrid:
+            reason = "not_hybrid"
+        elif not engine_client.vllm_config.cache_config.enable_prefix_caching:
+            reason = "prefix_caching_disabled"
+        elif (
+            getattr(
+                getattr(engine_client.vllm_config, "parallel_config", None),
+                "data_parallel_size",
+                1,
+            )
+            > 1
+        ):
+            reason = "data_parallel_unsupported"
+        elif getattr(engine_client.vllm_config, "kv_transfer_config", None) is not None:
+            reason = "kv_transfer_unsupported"
+        if reason is not None:
+            logger.debug(
+                "Decisions prefix warm: request_id=%s status=skipped reason=%s",
+                request_id,
+                reason,
+            )
+            return
+        shared = common_prefix_len(prompts)
+        if shared < MIN_WARM_PREFIX_TOKENS:
+            logger.debug(
+                "Decisions prefix warm: request_id=%s status=skipped "
+                "reason=short_prefix prefix_tokens=%d",
+                request_id,
+                shared,
+            )
+            return
+
+        generator = engine_client.generate(
+            tokens_input(list(prompts[0][:shared]), cache_salt=cache_salt),
+            SamplingParams(max_tokens=1, temperature=0.0),
+            f"{request_id}-prefix",
+            lora_request=lora_request,
+            trace_headers=trace_headers,
+            priority=priority,
+        )
+        started = time.perf_counter()
+        result = None
+        try:
+            async for result in generator:
+                pass
+        finally:
+            # AsyncLLM.generate owns abort-on-cancel/GeneratorExit. Closing the
+            # iterator invokes that contract without a second explicit abort.
+            await generator.aclose()
+        if (
+            result is None
+            or not result.finished
+            or len(result.outputs) != 1
+            or not result.outputs[0].token_ids
+            or result.outputs[0].finish_reason not in ("stop", "length")
+        ):
+            raise ValueError("Shared-prefix warm request did not complete successfully")
+        logger.debug(
+            "Decisions prefix warm: request_id=%s status=completed "
+            "prefix_tokens=%d cached_tokens=%d elapsed_ms=%.3f",
+            request_id,
+            shared,
+            result.num_cached_tokens,
+            (time.perf_counter() - started) * 1000,
+        )
+
     async def read(
         self,
         questions: list[Question],
@@ -293,7 +426,7 @@ class NextTokenStrategy(ReadStrategy):
         read_request = self._read_request(chat_template_kwargs, cache_salt)
         image_parts = await self._image_parts((media or {}).get("image", ()))
 
-        slots, engine_inputs, params = [], [], []
+        slots, engine_inputs, params, prompts = [], [], [], []
         for q in questions:
             content: Any = self._content(state, q)
             if image_parts:
@@ -307,12 +440,28 @@ class NextTokenStrategy(ReadStrategy):
                     "these chat options end the prompt differently, so the "
                     "labels' tokens are unknown"
                 )
+            prompts.append(prompt_ids)
             slots.append(self._label_groups(q))
             engine_inputs.append(self._read_input(engine_input, prompt_ids))
             params.append(
                 self._sampling_params([i for ids in slots[-1] for i in ids], prompt_ids)
             )
 
+        if media:
+            logger.debug(
+                "Decisions prefix warm: request_id=%s status=skipped "
+                "reason=unsupported_media",
+                request_id,
+            )
+        else:
+            await self._warm_shared_prefix(
+                prompts,
+                request_id,
+                lora_request=lora_request,
+                priority=priority,
+                cache_salt=cache_salt,
+                trace_headers=trace_headers,
+            )
         label_reads = await next_token_label_reads(
             ctx.engine_client,
             engine_inputs,
@@ -323,6 +472,15 @@ class NextTokenStrategy(ReadStrategy):
             priority=priority,
         )
 
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Decisions reads: request_id=%s questions=%d input_tokens=%d "
+                "branch_cached_tokens=%s",
+                request_id,
+                len(label_reads),
+                sum(len(read.result.prompt_token_ids or ()) for read in label_reads),
+                [read.result.num_cached_tokens for read in label_reads],
+            )
         reads = []
         for groups, label_read in zip(slots, label_reads):
             output = label_read.result.outputs[0]

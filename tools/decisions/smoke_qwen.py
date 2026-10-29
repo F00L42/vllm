@@ -146,6 +146,21 @@ def run(args, report):
     assert len(result_limits["answers"]["all_letters"]["probabilities"]) == 26
     assert len(result_limits["answers"]["all_digits"]["probabilities"]) == 10
 
+    extended = payload | {
+        "questions": {
+            "choice128": {
+                "type": "choice",
+                "instructions": "Pick one option.",
+                "criteria": dict.fromkeys(map(str, range(128))),
+            }
+        }
+    }
+    status, result_extended = call("/v1/systemone", extended)
+    report["choice128"] = {"status": status, "body": result_extended}
+    assert status == 200, result_extended
+    check_answer(result_extended, extended["questions"])
+    assert len(result_extended["answers"]["choice128"]["probabilities"]) == 128
+
     failures = {
         "empty_questions": {"questions": {}},
         "too_many_questions": {
@@ -153,7 +168,7 @@ def run(args, report):
         },
         "too_many_options": {
             "questions": {
-                "q": {"type": "choice", "criteria": dict.fromkeys(map(str, range(27)))}
+                "q": {"type": "choice", "criteria": dict.fromkeys(map(str, range(129)))}
             }
         },
         "thinking": {"chat_template_kwargs": {"enable_thinking": True}},

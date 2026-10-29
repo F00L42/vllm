@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import hashlib
 from argparse import Namespace
 from http import HTTPStatus
 from typing import Any
@@ -74,17 +75,37 @@ def init_structured_decisions_state(
     state.serving_structured_decisions = None
     try:
         strategy_cls = select_read_strategy(engine_client.model_config, supported_tasks)
-        strategy = strategy_cls(
-            ReadContext(
-                engine_client=engine_client,
-                online_renderer=state.online_renderer,
-                chat_template=load_chat_template(args.chat_template),
-                chat_template_content_format=args.chat_template_content_format,
-                default_chat_template_kwargs=default_chat_template_kwargs,
-            )
-        )
     except ValueError as e:
         logger.debug("/v1/systemone is disabled: %s", e)
+        return
+    context = ReadContext(
+        engine_client=engine_client,
+        online_renderer=state.online_renderer,
+        chat_template=load_chat_template(args.chat_template),
+        chat_template_content_format=args.chat_template_content_format,
+        default_chat_template_kwargs=default_chat_template_kwargs,
+    )
+    try:
+        strategy = strategy_cls(context)
+    except ValueError as e:
+        model_config = engine_client.model_config
+        tokenizer = state.online_renderer.renderer.get_tokenizer()
+        template = (
+            context.chat_template
+            if context.chat_template is not None
+            else getattr(tokenizer, "chat_template", None)
+        )
+        template_text = template if isinstance(template, str) else repr(template)
+        template_hash = hashlib.sha256(template_text.encode()).hexdigest()
+        logger.error(
+            "/v1/systemone initialization failed: model=%r architecture=%s "
+            "tokenizer=%r chat_template_sha256=%s: %s",
+            getattr(model_config, "model", None),
+            model_config.architecture,
+            getattr(model_config, "tokenizer", None),
+            template_hash,
+            e,
+        )
         return
     state.serving_structured_decisions = ServingStructuredDecisions(
         state.openai_serving_models, strategy, request_logger=request_logger

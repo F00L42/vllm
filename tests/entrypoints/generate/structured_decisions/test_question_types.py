@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import string
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
 
 from vllm.entrypoints.generate.structured_decisions.question_types import (
+    CHOICE_LABELS_128,
     QUESTION_TYPES,
     Option,
     Question,
@@ -96,8 +99,8 @@ def test_one_option_choice():
 def test_option_limit():
     with pytest.raises(StructuredDecisionError, match="at most 2 options"):
         choice(criteria={"x": None, "y": None, "z": None}, max_options=2)
-    with pytest.raises(StructuredDecisionError, match="at most 26 options"):
-        choice(criteria={str(i): None for i in range(27)})
+    with pytest.raises(StructuredDecisionError, match="at most 128 options"):
+        choice(criteria={str(i): None for i in range(129)})
 
 
 def test_noul_labels_and_prompt():
@@ -177,3 +180,69 @@ def test_registered_type_plugs_in():
             register_question_type(BinaryQuestion)
     finally:
         del QUESTION_TYPES["test_binary"]
+
+
+@pytest.mark.parametrize("count", [1, 26, 27, 64, 128])
+def test_choice_uses_stable_extended_labels(count):
+    q = choice(criteria={f"option_{i}": None for i in range(count)})
+    assert q.labels == CHOICE_LABELS_128[:count]
+    assert len(q.labels) == count
+    assert len(set(q.labels)) == count
+    if count <= 26:
+        assert q.labels == tuple(string.ascii_uppercase[:count])
+    else:
+        assert q.labels[26] == "AA"
+        assert q.type.prompt(q).endswith(
+            "Answer with the exact label of one option only."
+        )
+
+
+def test_fixed_choice_codebook_preserves_prefix_and_excludes_split_labels():
+    assert len(CHOICE_LABELS_128) == len(set(CHOICE_LABELS_128)) == 128
+    assert CHOICE_LABELS_128[:26] == tuple(string.ascii_uppercase)
+    assert CHOICE_LABELS_128[26:28] == ("AA", "AB")
+    assert CHOICE_LABELS_128[-1] == "EE"
+    assert not {"BQ", "BZ", "CJ"} & set(CHOICE_LABELS_128)
+
+
+@pytest.mark.parametrize("count", range(1, 27))
+def test_legacy_choice_prompt_is_unchanged(count):
+    q = choice(
+        criteria={f"option_{i}": f"description {i}" for i in range(count)},
+        instructions="Which team? Français 日本語",
+    )
+    assert q.type.prompt(q) == QuestionType.prompt(q.type, q)
+    assert q.type.prompt(q).endswith("Answer with the letter of one option only.")
+
+
+def test_extended_choice_keeps_business_keys_and_probability_contract():
+    q = choice(criteria={f"option_{i}": None for i in range(128)})
+    probs = [0.0] * 127 + [1.0]
+    answer = q.type.answer(q, probs, 0.4)
+    assert answer["choice"] == "option_127"
+    assert list(answer["probabilities"]) == [f"option_{i}" for i in range(128)]
+    assert answer["probabilities"]["option_127"] == 1.0
+    assert answer["confidence"] == 0.4
+
+
+def test_explicit_legacy_limit_is_still_respected():
+    with pytest.raises(StructuredDecisionError, match="at most 26 options"):
+        choice(criteria={str(i): None for i in range(27)}, max_options=26)
+
+
+def test_mixed_choice_sizes_do_not_mutate_shared_reply_instruction():
+    small = choice(criteria={"only": None})
+    wide = choice(criteria={str(i): None for i in range(128)})
+    assert small.type is wide.type
+    original = small.type.reply_instruction
+    questions = [small, wide, small, wide] * 8
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        prompts = list(pool.map(lambda q: q.type.prompt(q), questions))
+    for q, prompt in zip(questions, prompts):
+        expected = (
+            "Answer with the letter of one option only."
+            if q is small
+            else "Answer with the exact label of one option only."
+        )
+        assert prompt.endswith(expected)
+    assert small.type.reply_instruction == original

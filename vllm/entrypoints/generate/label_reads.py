@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """One-token reads that return the logprobs of chosen label tokens."""
 
+import math
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -72,5 +73,10 @@ async def next_token_label_reads(
                 f"Token IDs {missing} not found in logprobs for item {i}. "
                 "This might indicate the tokens are outside the model's vocabulary."
             )
-        reads.append(LabelRead(result, [logprobs[t].logprob for t in label_ids]))
+        candidate_logprobs = [logprobs[t].logprob for t in label_ids]
+        if any(
+            math.isnan(lp) or lp == math.inf for lp in candidate_logprobs
+        ) or not any(math.isfinite(lp) for lp in candidate_logprobs):
+            raise ValueError(f"Invalid candidate logprobs for item {i}")
+        reads.append(LabelRead(result, candidate_logprobs))
     return reads

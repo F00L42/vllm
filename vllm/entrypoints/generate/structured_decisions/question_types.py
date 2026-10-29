@@ -22,6 +22,113 @@ class StructuredDecisionError(ValueError):
 #: token at the start of a reply for the tokenizers tested. Every read checks it.
 LABELS = tuple(string.ascii_uppercase)
 
+#: Frozen single-token labels verified on Qwen3.6-27B revision
+#: 6a9e13bd6fc8f0983b9b99948120bc37f49c13e9. Validate the served tokenizer too.
+CHOICE_LABELS_128 = LABELS + (
+    "AA",
+    "AB",
+    "AC",
+    "AD",
+    "AE",
+    "AF",
+    "AG",
+    "AH",
+    "AI",
+    "AJ",
+    "AK",
+    "AL",
+    "AM",
+    "AN",
+    "AO",
+    "AP",
+    "AQ",
+    "AR",
+    "AS",
+    "AT",
+    "AU",
+    "AV",
+    "AW",
+    "AX",
+    "AY",
+    "AZ",
+    "BA",
+    "BB",
+    "BC",
+    "BD",
+    "BE",
+    "BF",
+    "BG",
+    "BH",
+    "BI",
+    "BJ",
+    "BK",
+    "BL",
+    "BM",
+    "BN",
+    "BO",
+    "BP",
+    "BR",
+    "BS",
+    "BT",
+    "BU",
+    "BV",
+    "BW",
+    "BX",
+    "BY",
+    "CA",
+    "CB",
+    "CC",
+    "CD",
+    "CE",
+    "CF",
+    "CG",
+    "CH",
+    "CI",
+    "CK",
+    "CL",
+    "CM",
+    "CN",
+    "CO",
+    "CP",
+    "CR",
+    "CS",
+    "CT",
+    "CU",
+    "CV",
+    "CW",
+    "CX",
+    "CY",
+    "DA",
+    "DB",
+    "DC",
+    "DD",
+    "DE",
+    "DF",
+    "DG",
+    "DH",
+    "DI",
+    "DJ",
+    "DK",
+    "DL",
+    "DM",
+    "DN",
+    "DO",
+    "DP",
+    "DR",
+    "DS",
+    "DT",
+    "DU",
+    "DV",
+    "DW",
+    "DX",
+    "DY",
+    "EA",
+    "EB",
+    "EC",
+    "ED",
+    "EE",
+)
+
 
 @dataclass(frozen=True)
 class Option:
@@ -140,6 +247,15 @@ class ChoiceQuestion(QuestionType):
     or to null."""
 
     name = "choice"
+    label_set = CHOICE_LABELS_128
+
+    def prompt(self, question: Question) -> str:
+        prompt = super().prompt(question)
+        if len(question.options) > len(LABELS):
+            return prompt.removesuffix(self.reply_instruction) + (
+                "Answer with the exact label of one option only."
+            )
+        return prompt
 
     def parse_options(self, qid: str, criteria: Any) -> list[Option]:
         if not isinstance(criteria, dict) or not criteria:

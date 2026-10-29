@@ -14,7 +14,7 @@ def server():
         "--dtype",
         "bfloat16",
         "--max-model-len",
-        "1024",
+        "4096",
         "--enforce-eager",
         "--max-num-seqs",
         "32",
@@ -163,15 +163,15 @@ def test_option_limit(server):
         "chat_template_kwargs": {"enable_thinking": False},
     }
     ok = post(
-        server, {**body, "questions": {"n": choice("Which?", *map(str, range(26)))}}
+        server, {**body, "questions": {"n": choice("Which?", *map(str, range(128)))}}
     )
     assert ok.status_code == 200, ok.text
-    assert len(ok.json()["answers"]["n"]["probabilities"]) == 26
+    assert len(ok.json()["answers"]["n"]["probabilities"]) == 128
     over = post(
-        server, {**body, "questions": {"n": choice("Which?", *map(str, range(27)))}}
+        server, {**body, "questions": {"n": choice("Which?", *map(str, range(129)))}}
     )
     assert over.status_code == 400
-    assert "at most 26 options" in over.json()["error"]["message"]
+    assert "at most 128 options" in over.json()["error"]["message"]
 
 
 def test_thinking_is_refused(server):
